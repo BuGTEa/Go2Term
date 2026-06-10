@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleName</key>
+    <string>Go2Term</string>
+    <key>CFBundleDisplayName</key>
+    <string>Go2Term</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.panbo.Go2Term</string>
+    <key>CFBundleExecutable</key>
+    <string>Go2Term</string>
+    <key>CFBundleVersion</key>
+    <string>4</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.3</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Go2Term needs to read the current Finder window's location to open it in your terminal.</string>
+</dict>
+</plist>

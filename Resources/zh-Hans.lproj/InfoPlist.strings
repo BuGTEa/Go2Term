@@ -1,0 +1,1 @@
+NSAppleEventsUsageDescription = "Go2Term 需要读取 Finder 当前窗口的路径，以便在终端中打开该目录。";

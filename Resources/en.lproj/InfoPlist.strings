@@ -1,0 +1,1 @@
+NSAppleEventsUsageDescription = "Go2Term needs to read the current Finder window's location to open it in your terminal.";
