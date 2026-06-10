@@ -25,10 +25,9 @@
 
 ### Install
 
-1. Download the `.dmg` from [Releases](../../releases), drag **Go2Term** to **Applications**
-2. Open Go2Term. macOS will warn that the app is from an unidentified source (it is signed but not yet notarized) — allow it via **System Settings → Privacy & Security → Open Anyway**
-3. Click **Install to Finder Toolbar**. Finder relaunches with the icon in place
-4. First click on the icon: approve the *"Go2Term wants to control Finder"* prompt (one time only — it's how Go2Term reads the current folder)
+1. Download the `.dmg` from [Releases](../../releases), drag **Go2Term** to **Applications** (signed & notarized — opens without warnings)
+2. Open Go2Term and click **Install to Finder Toolbar**. Finder relaunches with the icon in place
+3. First click on the icon: approve the *"Go2Term wants to control Finder"* prompt (one time only — it's how Go2Term reads the current folder)
 
 ### Usage
 
@@ -67,10 +66,9 @@ Signing identity is set at the top of `build.sh` — replace it with your own (o
 
 ### 安装
 
-1. 从 [Releases](../../releases) 下载 `.dmg`，把 **Go2Term** 拖到 **应用程序**
-2. 打开 Go2Term。因为暂未公证，macOS 会提示来源不明——去 **系统设置 → 隐私与安全性 → 仍要打开**
-3. 点 **「一键安装到 Finder 工具栏」**，Finder 重启后图标就位
-4. 第一次点图标时，允许 *「Go2Term 想要控制 Finder」* 的授权（仅一次，用于读取当前目录）
+1. 从 [Releases](../../releases) 下载 `.dmg`，把 **Go2Term** 拖到 **应用程序**（已签名并公证，打开无任何警告）
+2. 打开 Go2Term，点 **「一键安装到 Finder 工具栏」**，Finder 重启后图标就位
+3. 第一次点图标时，允许 *「Go2Term 想要控制 Finder」* 的授权（仅一次，用于读取当前目录）
 
 ### 使用
 
