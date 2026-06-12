@@ -4,9 +4,10 @@ set -e
 cd "$(dirname "$0")"
 
 IDENTITY="Developer ID Application: Manku LLC (8KT244CY2B)"
-APP=build/Go2Term.app
+# 输出目录带 .noindex：聚焦不索引，避免 Apps/启动台里出现第二个 Go2Term
+APP=build.noindex/Go2Term.app
 
-rm -rf build
+rm -rf build build.noindex
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 echo "==> 编译 (arm64)"

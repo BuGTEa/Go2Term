@@ -1,4 +1,5 @@
 build/
+build.noindex/
 AppIcon.iconset/
 .DS_Store
 *.dmg

@@ -5,7 +5,7 @@ import ApplicationServices
 //
 // 行为：
 //   - 未安装到 Finder 工具栏时打开 → 显示安装/设置窗口
-//   - 已安装时点击（或打开）→ 弹出菜单：在此处打开终端 / 在此处新建文件
+//   - 已安装时点击（或打开）→ 弹出菜单：在此处打开终端 / 在此处新建文件 / 设置…
 //     （设置里可关掉菜单，恢复单击直接开终端）
 //   - 按住 ⌥ 打开，或 `open -a Go2Term --args config` → 强制显示设置窗口
 //   - `--args install` / `--args uninstall` → 命令行安装/卸载工具栏项
@@ -50,6 +50,7 @@ enum L10n {
     static var quit: String { zh ? "退出 Go2Term" : "Quit Go2Term" }
     static var menuOpenTerminal: String { zh ? "在此处打开终端" : "Open Terminal Here" }
     static var menuNewFile: String { zh ? "在此处新建文件" : "New File Here" }
+    static var menuSettings: String { zh ? "设置…" : "Settings…" }
     static var showMenuToggle: String { zh
         ? "点击图标时显示菜单（关闭则直接打开终端）"
         : "Show menu on click (off: open terminal directly)" }
@@ -213,6 +214,22 @@ func removeFromToolbar() {
 
 // MARK: - 打开终端
 
+/// 诊断日志：NSLog 在 macOS 26 上不进 unified log，落盘到 /tmp/g2t.log。
+/// 默认关闭，`defaults write com.panbo.Go2Term DebugLog -bool true` 开启
+let g2tDebugLogEnabled = UserDefaults.standard.bool(forKey: "DebugLog")
+
+func g2tLog(_ msg: String) {
+    guard g2tDebugLogEnabled else { return }
+    let line = "\(Date()) \(msg)\n"
+    if let fh = FileHandle(forWritingAtPath: "/tmp/g2t.log") {
+        fh.seekToEndOfFile()
+        fh.write(line.data(using: .utf8)!)
+        try? fh.close()
+    } else {
+        try? line.write(toFile: "/tmp/g2t.log", atomically: true, encoding: .utf8)
+    }
+}
+
 func finderCurrentPath() -> String {
     // insertion location = 最前面 Finder 窗口的目录；没有窗口时是桌面
     let source = """
@@ -227,18 +244,74 @@ func finderCurrentPath() -> String {
     var error: NSDictionary?
     if let result = NSAppleScript(source: source)?.executeAndReturnError(&error),
        let path = result.stringValue {
+        g2tLog("finderCurrentPath ok: \(path)")
         return path
     }
+    g2tLog("finderCurrentPath FAILED: \(error?.description ?? "nil result")")
     return NSHomeDirectory()
+}
+
+/// 启动事件的发送者是不是 Finder。点工具栏图标由 Finder 发起；
+/// 从 Apps 启动器、聚焦、Dock、命令行等其他入口打开 → 应进设置窗口
+func launchedByFinder() -> Bool {
+    guard let ev = NSAppleEventManager.shared().currentAppleEvent,
+          let pid = ev.attributeDescriptor(forKeyword: AEKeyword(keySenderPIDAttr))?.int32Value,
+          let sender = NSRunningApplication(processIdentifier: pid)
+    else {
+        g2tLog("launch sender: unknown")
+        return false
+    }
+    g2tLog("launch sender: pid=\(pid) \(sender.bundleIdentifier ?? "?")")
+    return sender.bundleIdentifier == "com.apple.finder"
+}
+
+/// 区分「点工具栏图标」和「在访达里双击 app 本体」：双击启动时 Finder 的选中项
+/// 必然包含本 app 自己，点工具栏图标则不会改变选中项。后者应进设置窗口
+func launchedByOpeningSelfInFinder() -> Bool {
+    let source = """
+    tell application "Finder"
+        try
+            set out to {}
+            repeat with a in (get selection as alias list)
+                set end of out to POSIX path of a
+            end repeat
+            return out
+        on error
+            return {}
+        end try
+    end tell
+    """
+    var error: NSDictionary?
+    guard let result = NSAppleScript(source: source)?.executeAndReturnError(&error) else {
+        g2tLog("finderSelection FAILED: \(error?.description ?? "nil result")")
+        return false
+    }
+    let me = Bundle.main.bundleURL.standardizedFileURL.path
+    for i in 1...max(result.numberOfItems, 1) {
+        let item = result.numberOfItems > 0 ? result.atIndex(i) : result
+        guard let path = item?.stringValue else { continue }
+        if URL(fileURLWithPath: path).standardizedFileURL.path == me {
+            g2tLog("finderSelection contains self")
+            return true
+        }
+    }
+    return false
 }
 
 func openTerminal() {
     let terminal = UserDefaults.standard.string(forKey: kTerminalKey) ?? "iTerm"
+    let path = finderCurrentPath()
+    g2tLog("openTerminal: terminal=\(terminal) path=\(path)")
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    p.arguments = ["-a", terminal, finderCurrentPath()]
-    try? p.run()
-    p.waitUntilExit()
+    p.arguments = ["-a", terminal, path]
+    do {
+        try p.run()
+        p.waitUntilExit()
+        g2tLog("open exit=\(p.terminationStatus)")
+    } catch {
+        g2tLog("open spawn FAILED: \(error)")
+    }
 }
 
 // MARK: - 新建文件
@@ -335,6 +408,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let wantsConfig = args.contains("config") || NSEvent.modifierFlags.contains(.option)
         if isInstalledInToolbar() && !wantsConfig {
+            // 只有「Finder 发起 + 双击的不是 app 本体」才是工具栏点击；其余入口进设置
+            if !launchedByFinder() || launchedByOpeningSelfInFinder() {
+                showWindow()
+                return
+            }
             if showActionMenuEnabled {
                 // 不能内联弹菜单：popUp 的嵌套 runloop 会挂住启动栈，且激活未完成时收不到键盘
                 DispatchQueue.main.async { self.showActionMenu() }
@@ -347,6 +425,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showWindow()
     }
 
+    /// 菜单已弹出时再次点工具栏图标 / 在访达双击 app 会发 reopen 给本进程，
+    /// 不拦截会再弹一个菜单（用户报告的「两个菜单」）
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        return false
+    }
+
     var showActionMenuEnabled: Bool {
         UserDefaults.standard.object(forKey: kShowMenuKey) == nil
             ? true
@@ -354,8 +439,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     var menuAnchor: NSWindow?
+    var suppressAutoTerminate = false
 
     func showActionMenu() {
+        // 菜单流程自管生命周期（所有分支以显式 terminate 或 showWindow 收尾），
+        // 期间挂起自动 terminate——见 applicationShouldTerminateAfterLastWindowClosed 注释
+        suppressAutoTerminate = true
         let menu = NSMenu()
         let open = NSMenuItem(title: L10n.menuOpenTerminal,
                               action: #selector(menuOpenTerminal(_:)), keyEquivalent: "")
@@ -365,6 +454,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  action: #selector(menuNewFile(_:)), keyEquivalent: "")
         newFile.target = self
         menu.addItem(newFile)
+        menu.addItem(.separator())
+        let settings = NSMenuItem(title: L10n.menuSettings,
+                                  action: #selector(menuShowConfig(_:)), keyEquivalent: "")
+        settings.target = self
+        menu.addItem(settings)
 
         let pt = NSEvent.mouseLocation
         // accessory app 弹菜单后 Finder 会立刻抢回焦点导致菜单被关；
@@ -379,11 +473,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.activate(ignoringOtherApps: true)
         anchor.makeKeyAndOrderFront(nil)
+        // 鼠标若在菜单弹出瞬间已落在菜单内（边角死区或第一项上），后续点击会被
+        // 菜单跟踪静默吞掉。把菜单顶边放到鼠标下方几个点，让鼠标从外部移入
+        let menuPt = NSPoint(x: pt.x, y: pt.y - 8)
         // 延迟一拍：等激活落定，并吸收工具栏点击残留的 mouse-up（立刻弹会被它关掉）
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             // 同步阻塞到菜单关闭；选中项的 action 在返回前已派发完，取消则直接落到 terminate
-            _ = menu.popUp(positioning: nil, at: pt, in: nil)
-            NSApp.terminate(nil)
+            _ = menu.popUp(positioning: nil, at: menuPt, in: nil)
+            if self.configRequested {
+                self.menuAnchor?.orderOut(nil)
+                self.showWindow()
+                self.suppressAutoTerminate = false  // 设置窗口已可见，恢复关窗即退出
+            } else {
+                NSApp.terminate(nil)
+            }
         }
     }
 
@@ -395,6 +498,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func menuNewFile(_ sender: Any?) {
         menuAnchor?.orderOut(nil)
         createNewFileInFinder()
+    }
+
+    var configRequested = false
+
+    @objc func menuShowConfig(_ sender: Any?) {
+        // 不能在这里直接开窗口——popUp 的嵌套 runloop 还没退出；置标记，返回后处理
+        configRequested = true
     }
 
     func showWindow() {
@@ -517,7 +627,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = mainMenu
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// 菜单流程期间必须挂起「最后窗口关闭即退出」：选中菜单项后弹窗+anchor 都已关闭，
+    /// AppKit 会调度自动 terminate，并在 NSAppleScript 等 AE 回复的嵌套 runloop 里执行,
+    /// 把进程杀死在 action 半路（终端没开、文件没建）。菜单路径自己负责 terminate。
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        !suppressAutoTerminate
+    }
 }
 
 let app = NSApplication.shared

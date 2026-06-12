@@ -17,7 +17,7 @@
 
 ### Features
 
-- **One click** on the Finder toolbar icon pops up a menu: **Open Terminal Here** / **New File Here** (or turn the menu off in settings for direct open-terminal)
+- **One click** on the Finder toolbar icon pops up a menu: **Open Terminal Here** / **New File Here** / **Settings…** (or turn the menu off in settings for direct open-terminal)
 - **New File Here** creates an empty `untitled.txt` in the current folder and selects it in Finder. On first use it offers to enable auto-rename (one-time **Accessibility** permission); decline and it simply leaves the file selected
 - **One-click install** — no manual toolbar dragging; Go2Term writes itself into the Finder toolbar (this is reverse-engineered from Finder's native toolbar storage format, see [How it works](#how-it-works))
 - Supports **iTerm2, Terminal, Warp, Ghostty, kitty, Alacritty** (auto-detected)
@@ -35,7 +35,7 @@
 | Action | How |
 |---|---|
 | Open terminal / new file at current folder | Click the toolbar icon, pick from the menu |
-| Settings window (choose terminal, toggle menu, install/remove) | Hold **⌥** and open Go2Term, or `open -a Go2Term --args config` |
+| Settings window (choose terminal, toggle menu, install/remove) | Double-click Go2Term in **Applications**, pick **Settings…** from the menu, hold **⌥** and open Go2Term, or `open -a Go2Term --args config` |
 | Change terminal from CLI | `defaults write com.panbo.Go2Term TerminalApp Terminal` |
 | Disable the click menu from CLI | `defaults write com.panbo.Go2Term ShowActionMenu -bool false` |
 | Install / uninstall from CLI | `open -a Go2Term --args install` / `--args uninstall` |
@@ -49,7 +49,7 @@
 
 ```sh
 ./build.sh        # requires Xcode command line tools
-ditto build/Go2Term.app /Applications/Go2Term.app
+ditto build.noindex/Go2Term.app /Applications/Go2Term.app
 ```
 
 Signing identity is set at the top of `build.sh` — replace it with your own (or use `--sign -` for ad-hoc).
@@ -60,7 +60,7 @@ Signing identity is set at the top of `build.sh` — replace it with your own (o
 
 ### 特性
 
-- 点一下 Finder 工具栏图标，弹出菜单：**在此处打开终端** / **在此处新建文件**（设置里可关掉菜单，恢复单击直接开终端）
+- 点一下 Finder 工具栏图标，弹出菜单：**在此处打开终端** / **在此处新建文件** / **设置…**（设置里可关掉菜单，恢复单击直接开终端）
 - **新建文件**在当前目录创建空白「未命名.txt」并在 Finder 中选中；首次使用时会询问是否启用自动重命名（一次性授予「辅助功能」权限），不授权则保持仅选中
 - **真·一键安装**——不用手动拖工具栏，Go2Term 直接把自己写进 Finder 工具栏配置（逆向了 Finder 原生存储格式，见上方 How it works）
 - 支持 **iTerm2、Terminal、Warp、Ghostty、kitty、Alacritty**（自动检测）
@@ -78,7 +78,7 @@ Signing identity is set at the top of `build.sh` — replace it with your own (o
 | 操作 | 方法 |
 |---|---|
 | 在终端打开 / 新建文件 | 点工具栏图标，从菜单中选 |
-| 设置窗口（选终端、菜单开关、安装/移除） | 按住 **⌥** 打开 Go2Term，或 `open -a Go2Term --args config` |
+| 设置窗口（选终端、菜单开关、安装/移除） | 在「应用程序」里双击 Go2Term，菜单里选「设置…」，按住 **⌥** 打开 Go2Term，或 `open -a Go2Term --args config` |
 | 命令行换终端 | `defaults write com.panbo.Go2Term TerminalApp Terminal` |
 | 命令行关闭点击菜单 | `defaults write com.panbo.Go2Term ShowActionMenu -bool false` |
 | 命令行安装/卸载 | `open -a Go2Term --args install` / `--args uninstall` |
