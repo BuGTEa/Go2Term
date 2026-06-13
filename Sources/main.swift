@@ -18,9 +18,17 @@ import ApplicationServices
 let kTerminalKey = "TerminalApp"
 let kShowMenuKey = "ShowActionMenu"
 let kAXPromptedKey = "DidPromptAccessibility"
+let kAutoCheckKey = "AutoCheckUpdates"
+let kLastCheckKey = "LastUpdateCheck"
 let kFinderDomain = "com.apple.finder"
 let kToolbarKey = "NSToolbar Configuration Browser"
 let kLocBase = "com.apple.finder.loc"
+
+// 更新相关常量
+let kRepo = "BuGTEa/Go2Term"
+let kTeamID = "8KT244CY2B"
+let kReleasePage = "https://github.com/\(kRepo)/releases/latest"
+let kUpdateCheckInterval: TimeInterval = 24 * 60 * 60  // 24h 节流
 
 // MARK: - 本地化（跟随系统语言）
 
@@ -49,6 +57,7 @@ enum L10n {
     static var cancel: String { zh ? "取消" : "Cancel" }
     static var quit: String { zh ? "退出 Go2Term" : "Quit Go2Term" }
     static var menuOpenTerminal: String { zh ? "在此处打开终端" : "Open Terminal Here" }
+    static var menuOpenVSCode: String { zh ? "在此处打开 VS Code" : "Open in VS Code Here" }
     static var menuNewFile: String { zh ? "在此处新建文件" : "New File Here" }
     static var menuSettings: String { zh ? "设置…" : "Settings…" }
     static var showMenuToggle: String { zh
@@ -61,6 +70,25 @@ enum L10n {
         : "With Accessibility permission, newly created files automatically enter rename mode. Turn on Go2Term in System Settings; it takes effect the next time you create a file." }
     static var axAllow: String { zh ? "前往授权" : "Open System Settings" }
     static var axLater: String { zh ? "暂不" : "Not Now" }
+
+    // 更新
+    static var autoCheckToggle: String { zh ? "启动时自动检查更新" : "Check for updates on launch" }
+    static var checkUpdatesButton: String { zh ? "检查更新" : "Check for Updates" }
+    static var checking: String { zh ? "正在检查更新…" : "Checking for updates…" }
+    static func upToDate(_ v: String) -> String { zh ? "已是最新版本（\(v)）" : "You're up to date (\(v))" }
+    static var checkFailed: String { zh ? "检查更新失败，请稍后重试" : "Update check failed, please try again later" }
+    static func updateFound(_ v: String) -> String { zh ? "发现新版本 \(v)" : "Version \(v) is available" }
+    static var updateInstall: String { zh ? "下载并安装" : "Download & Install" }
+    static var updateNotes: String { zh ? "更新内容" : "Release Notes" }
+    static var updateLater: String { zh ? "以后再说" : "Later" }
+    static var updating: String { zh ? "正在下载并安装…" : "Downloading & installing…" }
+    static func updateDone(_ v: String) -> String { zh
+        ? "已更新到 \(v)，下次点击图标即用新版本。"
+        : "Updated to \(v). The new version is used on your next click." }
+    static var updateDoneTitle: String { zh ? "更新完成" : "Update Complete" }
+    static var updateFailedTitle: String { zh ? "更新失败" : "Update Failed" }
+    static var openDownloadPage: String { zh ? "打开下载页" : "Open Download Page" }
+    static var ok: String { zh ? "好" : "OK" }
 }
 
 // MARK: - Finder 工具栏配置读写
@@ -314,6 +342,21 @@ func openTerminal() {
     }
 }
 
+func openVSCode() {
+    let path = finderCurrentPath()
+    g2tLog("openVSCode: path=\(path)")
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    p.arguments = ["-b", "com.microsoft.VSCode", path]
+    do {
+        try p.run()
+        p.waitUntilExit()
+        g2tLog("open vscode exit=\(p.terminationStatus)")
+    } catch {
+        g2tLog("open vscode FAILED: \(error)")
+    }
+}
+
 // MARK: - 新建文件
 
 func uniqueNewFileURL(in dir: String) -> URL {
@@ -373,6 +416,150 @@ func maybePromptAccessibility() {
     }
 }
 
+// MARK: - 自动更新
+
+struct Release {
+    let tag: String      // 形如 "v1.5.0"
+    let version: String  // 去掉 v 前缀，"1.5.0"
+    let htmlURL: String
+    let dmgURL: String?
+    let body: String
+}
+
+/// 安装结果：成功带新版本号，失败带错误文案
+enum InstallResult {
+    case success(String)
+    case failure(String)
+}
+
+/// 同步跑一个子进程，返回 (退出码, 合并的 stdout+stderr)
+@discardableResult
+func run(_ launchPath: String, _ args: [String]) -> (code: Int32, output: String) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: launchPath)
+    p.arguments = args
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = pipe
+    do { try p.run() } catch { return (-1, "\(error)") }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return (p.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+}
+
+enum Updater {
+    static var currentVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+    }
+
+    private static func components(_ v: String) -> [Int] {
+        v.split(separator: ".").map { Int($0) ?? 0 }
+    }
+
+    /// tag/version 是否比当前版本新
+    static func isNewer(_ version: String) -> Bool {
+        let new = components(version), cur = components(currentVersion)
+        let n = max(new.count, cur.count)
+        for i in 0..<n {
+            let a = i < new.count ? new[i] : 0
+            let b = i < cur.count ? cur[i] : 0
+            if a != b { return a > b }
+        }
+        return false
+    }
+
+    /// 查最新 Release（回主线程）。失败/超时 → nil
+    static func fetchLatestRelease(completion: @escaping (Release?) -> Void) {
+        guard let url = URL(string: "https://api.github.com/repos/\(kRepo)/releases/latest") else {
+            completion(nil); return
+        }
+        var req = URLRequest(url: url)
+        req.setValue("Go2Term", forHTTPHeaderField: "User-Agent")  // GitHub API 强制要求
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.timeoutInterval = 8
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            var release: Release?
+            if let data,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let tag = json["tag_name"] as? String {
+                let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+                let assets = json["assets"] as? [[String: Any]] ?? []
+                let dmg = assets.compactMap { $0["browser_download_url"] as? String }
+                    .first { $0.hasSuffix(".dmg") }
+                release = Release(
+                    tag: tag, version: version,
+                    htmlURL: json["html_url"] as? String ?? kReleasePage,
+                    dmgURL: dmg,
+                    body: json["body"] as? String ?? "")
+            }
+            DispatchQueue.main.async { completion(release) }
+        }.resume()
+    }
+
+    /// 下载 dmg → 校验签名/公证 → 原地替换 /Applications/Go2Term.app（回主线程）
+    /// 成功返回新版本号，失败返回错误文案
+    static func downloadAndInstall(_ release: Release, completion: @escaping (InstallResult) -> Void) {
+        guard let dmgStr = release.dmgURL, let dmgURL = URL(string: dmgStr) else {
+            completion(.failure(L10n.updateFailedTitle)); return
+        }
+        func fail(_ msg: String) { DispatchQueue.main.async { completion(.failure(msg)) } }
+        func ok(_ v: String) { DispatchQueue.main.async { completion(.success(v)) } }
+
+        var req = URLRequest(url: dmgURL)
+        req.setValue("Go2Term", forHTTPHeaderField: "User-Agent")
+        req.timeoutInterval = 60
+        URLSession.shared.downloadTask(with: req) { tmpURL, _, err in
+            guard let tmpURL, err == nil else { fail(L10n.updateFailedTitle); return }
+            // 下载文件搬到带 .dmg 后缀的临时路径，hdiutil 才认
+            let dmgPath = NSTemporaryDirectory() + "Go2Term-update-\(release.version).dmg"
+            try? FileManager.default.removeItem(atPath: dmgPath)
+            do {
+                try FileManager.default.moveItem(at: tmpURL, to: URL(fileURLWithPath: dmgPath))
+            } catch { fail(L10n.updateFailedTitle); return }
+            DispatchQueue.global().async {
+                let result = installFromDMG(dmgPath, version: release.version)
+                try? FileManager.default.removeItem(atPath: dmgPath)
+                switch result {
+                case .success(let v): ok(v)
+                case .failure(let m): fail(m)
+                }
+            }
+        }.resume()
+    }
+
+    /// 挂载 dmg、校验、ditto 替换、卸载。在后台线程同步执行
+    private static func installFromDMG(_ dmgPath: String, version: String) -> InstallResult {
+        // 挂载（不能加 -quiet：那样无 stdout，挂载点解析不到）
+        let attach = run("/usr/bin/hdiutil", ["attach", "-nobrowse", "-noverify", dmgPath])
+        guard attach.code == 0 else { return .failure(L10n.updateFailedTitle) }
+        // 解析挂载点（/Volumes/... 那一行的最后一段以制表符分隔）
+        let mount = attach.output.split(separator: "\n").compactMap { line -> String? in
+            let cols = line.components(separatedBy: "\t")
+            return cols.last.map { $0.trimmingCharacters(in: .whitespaces) }
+        }.first { $0.hasPrefix("/Volumes/") }
+        guard let mountPoint = mount else { return .failure(L10n.updateFailedTitle) }
+        defer { run("/usr/bin/hdiutil", ["detach", "-quiet", mountPoint]) }
+
+        let srcApp = mountPoint + "/Go2Term.app"
+        guard FileManager.default.fileExists(atPath: srcApp) else { return .failure(L10n.updateFailedTitle) }
+
+        // 校验：codesign 完整性 + TeamID + Gatekeeper 公证
+        guard run("/usr/bin/codesign", ["--verify", "--deep", "--strict", srcApp]).code == 0 else {
+            return .failure(L10n.updateFailedTitle)
+        }
+        let cs = run("/usr/bin/codesign", ["-dv", srcApp])
+        guard cs.output.contains("TeamIdentifier=\(kTeamID)") else { return .failure(L10n.updateFailedTitle) }
+        guard run("/usr/sbin/spctl", ["-a", "-t", "exec", srcApp]).code == 0 else {
+            return .failure(L10n.updateFailedTitle)
+        }
+
+        // 原地 ditto 覆盖（不先删 → 保留 bundle inode → 工具栏 alias 不失效）
+        let dst = Bundle.main.bundleURL.path
+        guard run("/usr/bin/ditto", [srcApp, dst]).code == 0 else { return .failure(L10n.updateFailedTitle) }
+        return .success(version)
+    }
+}
+
 // MARK: - 设置窗口
 
 /// 无边框窗口默认不能成为 key window，弹菜单的锚点窗口需要它
@@ -384,6 +571,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow?
     var installButton: NSButton!
     var statusLabel: NSTextField!
+    var updateStatusLabel: NSTextField?
 
     static let knownTerminals: [(name: String, bundleID: String)] = [
         ("iTerm", "com.googlecode.iterm2"),
@@ -418,7 +606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async { self.showActionMenu() }
             } else {
                 openTerminal()
-                NSApp.terminate(nil)
+                finishAfterAction()
             }
             return
         }
@@ -450,6 +638,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                               action: #selector(menuOpenTerminal(_:)), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
+        // 仅在装了 VS Code 时显示
+        if NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") != nil {
+            let vscode = NSMenuItem(title: L10n.menuOpenVSCode,
+                                    action: #selector(menuOpenVSCode(_:)), keyEquivalent: "")
+            vscode.target = self
+            menu.addItem(vscode)
+        }
         let newFile = NSMenuItem(title: L10n.menuNewFile,
                                  action: #selector(menuNewFile(_:)), keyEquivalent: "")
         newFile.target = self
@@ -485,7 +680,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.showWindow()
                 self.suppressAutoTerminate = false  // 设置窗口已可见，恢复关窗即退出
             } else {
-                NSApp.terminate(nil)
+                self.finishAfterAction()
             }
         }
     }
@@ -493,6 +688,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func menuOpenTerminal(_ sender: Any?) {
         menuAnchor?.orderOut(nil)  // 让出焦点，别挡住目标应用
         openTerminal()
+    }
+
+    @objc func menuOpenVSCode(_ sender: Any?) {
+        menuAnchor?.orderOut(nil)
+        openVSCode()
     }
 
     @objc func menuNewFile(_ sender: Any?) {
@@ -549,6 +749,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   target: self, action: #selector(menuToggleChanged(_:)))
         menuToggle.state = showActionMenuEnabled ? .on : .off
 
+        let autoCheckToggle = NSButton(checkboxWithTitle: L10n.autoCheckToggle,
+                                       target: self, action: #selector(autoCheckToggleChanged(_:)))
+        autoCheckToggle.state = autoCheckEnabled ? .on : .off
+
+        let checkButton = NSButton(title: L10n.checkUpdatesButton,
+                                   target: self, action: #selector(checkUpdatesClicked(_:)))
+        checkButton.bezelStyle = .rounded
+
+        let updateLabel = NSTextField(labelWithString: "")
+        updateLabel.font = .systemFont(ofSize: 11)
+        updateLabel.textColor = .secondaryLabelColor
+        updateLabel.alignment = .center
+        updateStatusLabel = updateLabel
+
         installButton = NSButton(title: "", target: self, action: #selector(toggleInstall(_:)))
         installButton.bezelStyle = .rounded
         installButton.keyEquivalent = "\r"
@@ -561,7 +775,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         refreshInstallState()
 
-        let stack = NSStackView(views: [iconView, title, subtitle, terminalRow, menuToggle, installButton, statusLabel])
+        let stack = NSStackView(views: [iconView, title, subtitle, terminalRow,
+                                        menuToggle, autoCheckToggle,
+                                        installButton, checkButton, updateLabel, statusLabel])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 12
@@ -580,6 +796,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+
+        // 打开设置窗口时，若到期则静默查一次更新（有新版才弹提示）
+        checkForUpdates(manual: false)
     }
 
     func refreshInstallState() {
@@ -594,6 +813,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func menuToggleChanged(_ sender: NSButton) {
         UserDefaults.standard.set(sender.state == .on, forKey: kShowMenuKey)
+    }
+
+    @objc func autoCheckToggleChanged(_ sender: NSButton) {
+        UserDefaults.standard.set(sender.state == .on, forKey: kAutoCheckKey)
+    }
+
+    @objc func checkUpdatesClicked(_ sender: NSButton) {
+        checkForUpdates(manual: true)
     }
 
     @objc func terminalChanged(_ sender: NSPopUpButton) {
@@ -615,6 +842,151 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             self.refreshInstallState()
         }
+    }
+
+    // MARK: 更新流程
+
+    var autoCheckEnabled: Bool {
+        UserDefaults.standard.object(forKey: kAutoCheckKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: kAutoCheckKey)
+    }
+
+    /// 自动检查是否到期（开关开 且 距上次 > 24h）
+    func shouldAutoCheckNow() -> Bool {
+        guard autoCheckEnabled else { return false }
+        if let last = UserDefaults.standard.object(forKey: kLastCheckKey) as? Date,
+           Date().timeIntervalSince(last) < kUpdateCheckInterval {
+            return false
+        }
+        return true
+    }
+
+    /// 动作（开终端/新建文件等）完成后的收尾：到期则后台查更新，
+    /// 有新版弹提示（保活），否则退出进程
+    func finishAfterAction() {
+        menuAnchor?.orderOut(nil)
+        guard shouldAutoCheckNow() else { NSApp.terminate(nil); return }
+        UserDefaults.standard.set(Date(), forKey: kLastCheckKey)
+        suppressAutoTerminate = true
+        g2tLog("auto update check…")
+        Updater.fetchLatestRelease { release in
+            if let release, Updater.isNewer(release.version) {
+                g2tLog("update available: \(release.version)")
+                self.presentUpdatePrompt(release, terminateWhenDone: true)
+            } else {
+                g2tLog("no update (latest=\(release?.version ?? "?"))")
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    /// 设置窗口里检查更新。manual=true 时忽略节流，并在已是最新时也给出反馈
+    func checkForUpdates(manual: Bool) {
+        if !manual && !shouldAutoCheckNow() { return }
+        UserDefaults.standard.set(Date(), forKey: kLastCheckKey)
+        if manual { updateStatusLabel?.stringValue = L10n.checking }
+        g2tLog("checkForUpdates(manual:\(manual)) current=\(Updater.currentVersion)")
+        Updater.fetchLatestRelease { release in
+            guard let release else {
+                g2tLog("checkForUpdates: fetch failed")
+                if manual { self.updateStatusLabel?.stringValue = L10n.checkFailed }
+                return
+            }
+            g2tLog("checkForUpdates: latest=\(release.version) newer=\(Updater.isNewer(release.version))")
+            if Updater.isNewer(release.version) {
+                self.updateStatusLabel?.stringValue = ""
+                self.presentUpdatePrompt(release, terminateWhenDone: false)
+            } else if manual {
+                self.updateStatusLabel?.stringValue = L10n.upToDate(Updater.currentVersion)
+            }
+        }
+    }
+
+    /// 共用更新提示框。terminateWhenDone=true 用于无设置窗口的瞬时启动路径
+    func presentUpdatePrompt(_ release: Release, terminateWhenDone: Bool) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = L10n.updateFound(release.version)
+        alert.informativeText = Self.notesPreview(release.body)
+        alert.addButton(withTitle: L10n.updateInstall)
+        alert.addButton(withTitle: L10n.updateNotes)
+        alert.addButton(withTitle: L10n.updateLater)
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            performUpdate(release, terminateWhenDone: terminateWhenDone)
+        case .alertSecondButtonReturn:
+            if let url = URL(string: release.htmlURL) { NSWorkspace.shared.open(url) }
+            presentUpdatePrompt(release, terminateWhenDone: terminateWhenDone)  // 看完再回提示
+        default:
+            if terminateWhenDone { NSApp.terminate(nil) }
+        }
+    }
+
+    func performUpdate(_ release: Release, terminateWhenDone: Bool) {
+        showProgress(L10n.updating)
+        Updater.downloadAndInstall(release) { result in
+            self.closeProgress()
+            switch result {
+            case .success(let v):
+                let a = NSAlert()
+                a.messageText = L10n.updateDoneTitle
+                a.informativeText = L10n.updateDone(v)
+                a.addButton(withTitle: L10n.ok)
+                a.runModal()
+                if terminateWhenDone { NSApp.terminate(nil) }
+                else { self.updateStatusLabel?.stringValue = L10n.upToDate(v) }
+            case .failure(let msg):
+                let a = NSAlert()
+                a.messageText = L10n.updateFailedTitle
+                a.informativeText = msg
+                a.addButton(withTitle: L10n.openDownloadPage)
+                a.addButton(withTitle: L10n.updateLater)
+                if a.runModal() == .alertFirstButtonReturn,
+                   let url = URL(string: release.htmlURL) { NSWorkspace.shared.open(url) }
+                if terminateWhenDone { NSApp.terminate(nil) }
+                else { self.updateStatusLabel?.stringValue = "" }
+            }
+        }
+    }
+
+    /// 取 release notes 前几行做提示框正文
+    static func notesPreview(_ body: String) -> String {
+        let lines = body.split(separator: "\n", omittingEmptySubsequences: false).prefix(8)
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // 下载安装期间的转圈进度窗口
+    var progressWindow: NSWindow?
+
+    func showProgress(_ text: String) {
+        NSApp.setActivationPolicy(.regular)
+        let spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.startAnimation(nil)
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        spinner.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        let stack = NSStackView(views: [spinner, NSTextField(labelWithString: text)])
+        stack.orientation = .horizontal
+        stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 24, left: 28, bottom: 24, right: 28)
+        let w = NSWindow(contentRect: .zero, styleMask: [.titled],
+                         backing: .buffered, defer: false)
+        w.title = "Go2Term"
+        w.contentView = stack
+        w.setContentSize(stack.fittingSize)
+        w.center()
+        w.isReleasedWhenClosed = false
+        progressWindow = w
+        w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func closeProgress() {
+        progressWindow?.orderOut(nil)
+        progressWindow = nil
     }
 
     func buildMenu() {
